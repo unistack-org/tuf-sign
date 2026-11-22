@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Build
+        run: go build ./...
+
+  # Build the tuf-sign binary for the self-hosted runners and publish it as a
+  # GitHub release asset on every tag. The unistack repo downloads this
+  # prebuilt binary in its TUF jobs instead of building it (which is what
+  # makes their tuf-publish step fast — no Go toolchain needed there).
+  #
+  # Both arches are built in a single job (not a matrix) so the release is
+  # created exactly once with both assets.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build (linux amd64 + arm64)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+            -o tuf-sign-linux-amd64 ./cmd/tuf-sign
+          GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+            -o tuf-sign-linux-arm64 ./cmd/tuf-sign
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "tuf-sign $tag" \
+            --notes "tuf-sign $tag (linux amd64 + arm64)" \
+            tuf-sign-linux-amd64 \
+            tuf-sign-linux-arm64
